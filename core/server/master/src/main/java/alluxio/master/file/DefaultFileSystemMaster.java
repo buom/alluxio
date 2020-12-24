@@ -455,13 +455,16 @@ public final class DefaultFileSystemMaster extends CoreMaster
 
   private static MountInfo getRootMountInfo(MasterUfsManager ufsManager) {
     try (CloseableResource<UnderFileSystem> resource = ufsManager.getRoot().acquireUfsResource()) {
-      String rootUfsUri = ServerConfiguration.get(PropertyKey.MASTER_MOUNT_TABLE_ROOT_UFS);
       boolean shared = resource.get().isObjectStorage()
           && ServerConfiguration.getBoolean(PropertyKey.UNDERFS_OBJECT_STORE_MOUNT_SHARED_PUBLICLY);
+      boolean readonly = ServerConfiguration.getBoolean(
+          PropertyKey.MASTER_MOUNT_TABLE_ROOT_READONLY);
+      String rootUfsUri = ServerConfiguration.get(PropertyKey.MASTER_MOUNT_TABLE_ROOT_UFS);
       Map<String, String> rootUfsConf =
           ServerConfiguration.getNestedProperties(PropertyKey.MASTER_MOUNT_TABLE_ROOT_OPTION);
       MountPOptions mountOptions = MountContext
-          .mergeFrom(MountPOptions.newBuilder().setShared(shared).putAllProperties(rootUfsConf))
+          .mergeFrom(MountPOptions.newBuilder().setShared(shared).setReadOnly(readonly)
+              .putAllProperties(rootUfsConf))
           .getOptions().build();
       return new MountInfo(new AlluxioURI(MountTable.ROOT),
           new AlluxioURI(rootUfsUri), IdUtils.ROOT_MOUNT_ID, mountOptions);
@@ -3551,10 +3554,20 @@ public final class DefaultFileSystemMaster extends CoreMaster
         if (ufsFpParsed.isValid()) {
           short mode = Short.parseShort(ufsFpParsed.getTag(Tag.MODE));
           long opTimeMs = System.currentTimeMillis();
-          setAttributeSingleFile(rpcContext, inodePath, false, opTimeMs, SetAttributeContext
-              .mergeFrom(SetAttributePOptions.newBuilder().setOwner(ufsFpParsed.getTag(Tag.OWNER))
-                  .setGroup(ufsFpParsed.getTag(Tag.GROUP)).setMode(new Mode(mode).toProto()))
-              .setUfsFingerprint(ufsFingerprint));
+          SetAttributePOptions.Builder builder = SetAttributePOptions.newBuilder()
+              .setMode(new Mode(mode).toProto());
+          String owner = ufsFpParsed.getTag(Tag.OWNER);
+          if (!owner.equals(Fingerprint.UNDERSCORE)) {
+            // Only set owner if not empty
+            builder.setOwner(owner);
+          }
+          String group = ufsFpParsed.getTag(Tag.GROUP);
+          if (!group.equals(Fingerprint.UNDERSCORE)) {
+            // Only set group if not empty
+            builder.setGroup(group);
+          }
+          setAttributeSingleFile(rpcContext, inodePath, false, opTimeMs,
+              SetAttributeContext.mergeFrom(builder).setUfsFingerprint(ufsFingerprint));
         }
       }
       if (syncPlan.toDelete()) {
